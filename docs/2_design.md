@@ -304,7 +304,260 @@ Sourcing.
 Transactional Outbox у Pet Service забезпечує узгодженість між збереженням доменної події в PostgreSQL та подальшою
 публікацією в Kafka.
 
-### 2.4.2. Висновок
+
+### 2.4.2.1. ER-діаграма схеми `pet`
+
+Схема `pet` містить основні сутності системи та компоненти реалізації Event Sourcing. Діаграма відображає зв'язки між користувачами, домашніми тваринами, правами доступу, запрошеннями, журналом подій, проєкціями та таблицею Outbox.
+
+```mermaid
+erDiagram
+    PET_USERS {
+        uuid id PK
+        varchar email UK
+        varchar password_hash
+        varchar display_name
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz deleted_at
+    }
+
+    PET_REFRESH_TOKENS {
+        uuid id PK
+        uuid user_id FK
+        varchar token_hash UK
+        uuid family_id
+        timestamptz expires_at
+        timestamptz revoked_at
+        timestamptz created_at
+    }
+
+    PET_PETS {
+        uuid id PK
+        varchar name
+        varchar species
+        varchar breed
+        date birth_date
+        varchar sex
+        varchar microchip_id
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    PET_ACCESS {
+        uuid id PK
+        uuid pet_id FK
+        uuid user_id FK
+        varchar role
+        uuid granted_by FK
+        timestamptz granted_at
+        timestamptz revoked_at
+    }
+
+    PET_INVITATIONS {
+        uuid id PK
+        uuid pet_id FK
+        uuid created_by FK
+        varchar invitee_email
+        varchar token_hash UK
+        varchar status
+        timestamptz expires_at
+        timestamptz accepted_at
+        timestamptz created_at
+    }
+
+    PET_EVENT_STORE {
+        uuid event_id PK
+        uuid aggregate_id
+        varchar aggregate_type
+        bigint version
+        varchar event_type
+        jsonb payload
+        uuid author_id FK
+        timestamptz occurred_at
+        timestamptz recorded_at
+    }
+
+    PET_OUTBOX {
+        uuid id PK
+        uuid event_id FK
+        varchar destination
+        jsonb payload
+        varchar status
+        integer attempts
+        timestamptz next_attempt_at
+        timestamptz published_at
+        timestamptz created_at
+    }
+
+    PET_PROFILES {
+        uuid pet_id PK
+        varchar name
+        varchar species
+        varchar breed
+        date birth_date
+        varchar sex
+        varchar microchip_id
+        bigint version
+        timestamptz updated_at
+    }
+
+    PET_PROCEDURES {
+        uuid id PK
+        uuid pet_id
+        varchar procedure_type
+        varchar description
+        date performed_at
+        uuid performed_by
+        uuid source_event_id
+        timestamptz created_at
+    }
+
+    PET_PROJECTION_CHECKPOINTS {
+        varchar projection_name PK
+        bigint last_position
+        timestamptz updated_at
+    }
+
+    PET_USERS ||--o{ PET_REFRESH_TOKENS : owns
+    PET_USERS ||--o{ PET_ACCESS : receives
+    PET_USERS ||--o{ PET_ACCESS : grants
+    PET_PETS ||--o{ PET_ACCESS : has
+    PET_USERS ||--o{ PET_INVITATIONS : creates
+    PET_PETS ||--o{ PET_INVITATIONS : has
+    PET_USERS ||--o{ PET_EVENT_STORE : authors
+    PET_PETS ||--|| PET_PROFILES : projected_as
+    PET_EVENT_STORE ||--o{ PET_OUTBOX : publishes
+```
+
+### 2.4.2.2. ER-діаграма схеми `geo`
+
+Схема `geo` призначена для зберігання геолокаційних даних і визначення стану перебування тварин у заданих геозонах. Основними сутностями є геозони, стани геозон, вимірювання координат і записи Outbox.
+
+```mermaid
+erDiagram
+    GEO_GEOZONES {
+        uuid id PK
+        uuid pet_id
+        varchar name
+        varchar shape_type
+        numeric center_lat
+        numeric center_lon
+        numeric radius_m
+        jsonb polygon
+        boolean enabled
+        integer version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    GEO_ZONE_STATES {
+        uuid id PK
+        uuid geozone_id FK
+        uuid pet_id
+        varchar current_state
+        varchar candidate_state
+        integer consecutive_confirmations
+        timestamptz last_measurement_at
+        timestamptz changed_at
+    }
+
+    GEO_MEASUREMENTS {
+        uuid id PK
+        uuid pet_id
+        numeric latitude
+        numeric longitude
+        numeric accuracy_m
+        numeric altitude_m
+        numeric speed_mps
+        varchar source
+        timestamptz recorded_at
+        timestamptz received_at
+    }
+
+    GEO_OUTBOX {
+        uuid id PK
+        uuid measurement_id
+        varchar event_type
+        jsonb payload
+        varchar status
+        integer attempts
+        timestamptz created_at
+        timestamptz published_at
+    }
+
+    GEO_GEOZONES ||--o{ GEO_ZONE_STATES : tracks
+```
+
+Для таблиці `geo_measurements` передбачається секціонування за полем `recorded_at`. З цієї причини первинний ключ у фізичній базі даних формується як складений ключ `(id, recorded_at)`. На ER-діаграмі тип ідентифікатора показано окремо для зручності читання, тому повне фізичне визначення ключа необхідно враховувати під час реалізації SQL-схеми.
+
+Поле `pet_id` у таблицях `geozones`, `zone_states` і `geo_measurements` є логічним посиланням на тварину, зареєстровану в сервісі `pet`. Воно не реалізується як фізичний зовнішній ключ між схемами.
+
+### 2.4.2.3. ER-діаграма схеми `reminder`
+
+Схема `reminder` забезпечує створення, зберігання та доставку нагадувань користувачам. Вона містить інформацію про пристрої, підписки, заплановані нагадування та результати їх доставки.
+
+```mermaid
+erDiagram
+    REMINDER_DEVICE_TOKENS {
+        uuid id PK
+        uuid user_id
+        varchar token UK
+        varchar platform
+        boolean active
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz last_used_at
+    }
+
+    REMINDER_SUBSCRIBERS {
+        uuid id PK
+        uuid user_id
+        uuid pet_id
+        boolean active
+        jsonb preferences
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    REMINDER_REMINDERS {
+        uuid id PK
+        uuid pet_id
+        uuid user_id
+        varchar title
+        text description
+        varchar reminder_type
+        timestamptz scheduled_at
+        varchar status
+        uuid source_event_id
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    REMINDER_DELIVERIES {
+        uuid id PK
+        uuid reminder_id FK
+        uuid device_token_id FK
+        integer attempt_no
+        varchar status
+        varchar provider_message_id
+        text error_message
+        timestamptz attempted_at
+        timestamptz delivered_at
+    }
+
+    REMINDER_PROCESSED_EVENTS {
+        varchar consumer_name PK
+        uuid event_id PK
+        timestamptz processed_at
+    }
+
+    REMINDER_REMINDERS ||--o{ REMINDER_DELIVERIES : generates
+    REMINDER_DEVICE_TOKENS ||--o{ REMINDER_DELIVERIES : receives
+```
+
+Поля `user_id`, `pet_id` і `source_event_id` у схемі `reminder` використовуються як логічні посилання на дані інших сервісів. Це дає змогу сервісу нагадувань працювати незалежно від фізичної структури таблиць сервісу керування тваринами.
+
+### 2.4.3. Висновок
 
 Спроєктована архітектура розділяє клієнтську частину, серверні сервіси та інфраструктуру обміну повідомленнями. Pet
 Service виділено як компонент із найбільш складною доменною логікою через використання Event Sourcing та Transactional
@@ -313,3 +566,325 @@ Outbox.
 Трасування пов'язує вимоги SRS із контейнерами та внутрішніми компонентами системи, а ADR-001 фіксує обґрунтування
 вибору брокера повідомлень. Документація підтримується у Markdown безпосередньо в Git-репозиторії відповідно до принципу
 Docs-as-Code.
+
+## 2.5. Специфікація міжсервісних контрактів (API Contracts)
+
+## 2.5.1. Вибір технології та межі контракту
+
+Для специфікації REST-інтерфейсу системи використовується стандарт **OpenAPI 3.0.3** у форматі YAML.
+
+Контракт описує взаємодію між контейнерами **Frontend SPA** та **Backend API (API Gateway)**. Він визначає структуру HTTP-запитів і відповідей, правила валідації вхідних даних, механізм авторизації та формати повідомлень про помилки.
+
+Для демонстрації контракту обрано сценарій керування домашніми тваринами. Він охоплює три основні операції:
+
+- отримання списку домашніх тварин авторизованого користувача;
+- створення нової домашньої тварини;
+- отримання інформації про конкретну тварину за її ідентифікатором.
+
+Авторизація здійснюється за допомогою JWT Bearer Token. Ідентифікатор користувача визначається сервером на основі токена, а не передається клієнтом у тілі запиту. Це запобігає можливості створення записів від імені іншого користувача шляхом підміни `user_id`.
+
+Контракт описує зовнішній REST-інтерфейс Backend API. Внутрішня взаємодія Backend API з Pet Service не є частиною цього контракту та може реалізовуватися через окремі внутрішні інтерфейси.
+
+## 2.5.2. Опис API-операцій
+
+У межах контракту визначено три операції для роботи з ресурсом `Pet`.
+
+| HTTP-метод | Endpoint        | Призначення                                                   |
+|------------|-----------------|---------------------------------------------------------------|
+| GET        | `/pets`         | Отримання списку тварин, доступних авторизованому користувачу |
+| POST       | `/pets`         | Створення нової тварини                                       |
+| GET        | `/pets/{petId}` | Отримання інформації про конкретну тварину                    |
+
+### GET /pets — отримання списку тварин
+
+Операція повертає список домашніх тварин, доступних авторизованому користувачу відповідно до його прав доступу.
+
+Для керування обсягом відповіді передбачено два query-параметри:
+
+- `limit` — максимальна кількість записів у відповіді. Допустимий діапазон — від 1 до 100, значення за замовчуванням — 20.
+- `offset` — кількість записів, які потрібно пропустити. Значення за замовчуванням — 0.
+
+Успішна відповідь має статус `200 OK` і містить масив тварин та метадані пагінації.
+
+### POST /pets — створення тварини
+
+Операція створює новий запис про домашню тварину.
+
+Клієнт передає дані у форматі JSON відповідно до схеми `CreatePetRequest`. Ідентифікатор власника не передається в тілі запиту: Backend API визначає його на основі перевіреного JWT.
+
+У разі успішного створення сервер повертає статус `201 Created`, URI створеного ресурсу в заголовку `Location` та представлення створеної тварини у форматі `PetResponse`.
+
+### GET /pets/{petId} — отримання тварини за ідентифікатором
+
+Операція повертає інформацію про конкретну тварину за її UUID.
+
+Перед поверненням даних Backend API перевіряє наявність ресурсу та права доступу автентифікованого користувача. Якщо користувач не має необхідних прав, повертається `403 Forbidden`. Якщо ресурс не знайдено — `404 Not Found`.
+
+Деталізовану специфікацію ендпоінтів у форматі OpenAPI 3.0 зафіксовано у файлі
+[openapi.yaml](./api/openapi.yaml)
+
+## 2.6. Моделювання логіки критичних вузлів системи
+
+У цьому підрозділі наведено алгоритми трьох критичних вузлів системи Pet Care: обробки команд із використанням Event Sourcing, визначення перетину геозон та обробки подій для надсилання push-сповіщень. Алгоритми описують послідовність операцій, умови переходів, обробку помилок і граничних випадків.
+
+Умовні позначення:
+
+- `:=` — оператор присвоювання;
+- `=` — оператор порівняння на рівність;
+- `AND`, `OR`, `NOT` — логічні оператори;
+- `Events[i]`, `Geofences[i]`, `Reminders[i]` — елементи відповідних колекцій;
+- `MAX_RETRIES` — максимальна кількість спроб;
+- `TIMEOUT` — граничний час очікування відповіді зовнішнього сервісу.
+
+---
+
+## 2.6.1. Алгоритм обробки команди в Pet Service з використанням Event Sourcing та Outbox
+
+**Призначення.** Алгоритм забезпечує обробку команди зміни даних домашньої тварини. Поточний стан агрегату відновлюється на основі послідовності незмінних подій. Після перевірки команди нові події записуються до Event Store, а відповідні повідомлення — до Outbox у межах однієї транзакції PostgreSQL. Окремий процес публікує повідомлення Outbox у Kafka.
+
+**Вхідні дані:**
+
+- `Command` — команда зміни даних тварини;
+- `aggregateId` — ідентифікатор агрегату Pet;
+- `commandId` — унікальний ідентифікатор команди;
+- `expectedVersion` — очікувана версія агрегату.
+
+**Вихідні дані:**
+
+- результат виконання команди;
+- нові події `NewEvents[i]`;
+- записи Outbox для подальшої публікації в Kafka.
+
+**Основні змінні:**
+
+- `Events[i]` — збережені події агрегату;
+- `State` — відновлений стан агрегату;
+- `CurrentVersion` — поточна версія агрегату;
+- `NewEvents[i]` — події, сформовані в результаті команди;
+- `OutboxRecord[i]` — записи для публікації в Kafka;
+- `RetryCount` — кількість спроб публікації.
+
+### Блок-схема алгоритму
+
+```mermaid
+flowchart TD
+    A([Початок]) --> B[/Отримати Command, commandId, aggregateId, expectedVersion/]
+    B --> C{"Command валідна AND aggregateId != null?"}
+    C -- Ні --> X1[Повернути помилку валідації]
+    C -- Так --> D[Перевірити commandId]
+    D --> E{"commandId вже оброблено?"}
+    E -- Так --> Y[/Повернути збережений результат/]
+    E -- Ні --> F[Завантажити Events_i з Event Store]
+    F --> G[State := Fold Events_i CurrentVersion := остання версія або -1]
+    G --> H{"expectedVersion = CurrentVersion?"}
+    H -- Ні --> X2[Повернути конфлікт версії]
+    H -- Так --> I{"Бізнес-правила виконано?"}
+    I -- Ні --> X3[Повернути помилку бізнес-валідації]
+    I -- Так --> J[NewEvents_i := Decide Command, State]
+    J --> K{"NewEvents порожній?"}
+    K -- Так --> Y
+    K -- Ні --> L[BEGIN TRANSACTION]
+    L --> M[Додати NewEvents_i до Event Store]
+    M --> N[OutboxRecord_i := сформувати записи для NewEvents_i]
+    N --> O[Додати OutboxRecord_i до Outbox]
+    O --> P{"Запис і COMMIT успішні?"}
+    P -- Ні --> Q[ROLLBACK]
+    Q --> X4[Повернути помилку збереження]
+    P -- Так --> R[/Повернути успішний результат/]
+    R --> S([Кінець])
+    
+    X1 --> S
+    X2 --> S
+    X3 --> S
+    X4 --> S
+    Y --> S
+```
+
+### Блок-схема публікації Outbox
+
+```mermaid
+flowchart TD
+    A([Початок]) --> B[Отримати записи Outbox зі статусом PENDING]
+    B --> C{"Існує OutboxRecord_i?"}
+    C -- Ні --> Z([Кінець])
+    C -- Так --> D[RetryCount := 0]
+    D --> E[Опублікувати OutboxRecord_i у Kafka]
+    E --> F{"Kafka підтвердила публікацію?"}
+    F -- Так --> G[Status := PUBLISHED]
+    G --> H[Перейти до наступного OutboxRecord_i]
+    F -- Ні --> I[RetryCount := RetryCount + 1]
+    I --> J{"RetryCount < MAX_RETRIES?"}
+    J -- Так --> K[Застосувати затримку повторної спроби]
+    K --> E
+    J -- Ні --> L[Status := FAILED зафіксувати помилку]
+    L --> H
+    H --> C
+```
+
+**Примітка щодо надійності.** Запис події та Outbox-запис виконуються атомарно в одній транзакції PostgreSQL. Публікація в Kafka відбувається окремо, тому можлива повторна доставка повідомлення у разі збою між публікацією та оновленням статусу Outbox. Споживачі подій мають враховувати можливість повторної доставки та забезпечувати ідемпотентну обробку за ідентифікатором події.
+
+## 2.6.2. Алгоритм визначення входу та виходу з геозони в Geo Service
+
+**Призначення.** Алгоритм визначає перетин геозони домашньою твариною на основі GPS-координат. Для зменшення хибних перемикань стану використовується гістерезис: умови входу та виходу мають різні порогові значення відстані.
+
+**Вхідні дані:**
+
+- `GPS[j]` — чергова GPS-позиція;
+- `Geofences[i]` — множина налаштованих геозон;
+- `R[i]` — радіус геозони;
+- `H[i]` — ширина гістерезису;
+- `A_MAX` — максимально допустима похибка GPS;
+- `LastTimestamp` — час останньої прийнятої позиції.
+
+**Вихідні дані:**
+
+- оновлений стан перебування у геозоні;
+- подія `GEOFENCE_ENTER` або `GEOFENCE_EXIT` у Kafka, якщо відбувся перехід.
+
+**Основні змінні:**
+
+- `Distance[i]` — відстань від GPS-позиції до центру геозони;
+- `State[i]` — поточний стан геозони: `INSIDE` або `OUTSIDE`;
+- `NewState[i]` — обчислений стан;
+- `Event[i]` — сформована подія переходу.
+
+### Блок-схема алгоритму
+
+```mermaid
+flowchart TD
+    A([Початок]) --> B[/Отримати GPS_j/]
+    B --> C{"Координати, deviceId і timestamp наявні?"}
+    C -- Ні --> X1[Відхилити GPS_j]
+    C -- Так --> D{"Координати в діапазоні AND accuracy <= A_MAX?"}
+    D -- Ні --> X1
+    D -- Так --> E{"GPS_j.timestamp > LastTimestamp?"}
+    E -- Ні --> X2[Відхилити застарілу позицію]
+    E -- Так --> F[Отримати Geofences_i]
+    F --> G{"Geofences не порожній?"}
+    G -- Ні --> H[Оновити останню прийняту GPS-позицію]
+    H --> Z([Кінець])
+    G -- Так --> I[Вибрати Geofences_i]
+    I --> J[Distance_i := обчислити відстань до центру]
+    J --> K[State_i := отримати стан із Redis]
+    K --> L{"State_i відсутній?"}
+    L -- Так --> M[State_i := початковий стан за Distance_i]
+    M --> N[NewState_i := State_i]
+    L -- Ні --> O{"State_i = OUTSIDE AND Distance_i <= R_i - H_i?"}
+    O -- Так --> P[NewState_i := INSIDE]
+    O -- Ні --> Q{"State_i = INSIDE AND Distance_i >= R_i + H_i?"}
+    Q -- Так --> R[NewState_i := OUTSIDE]
+    Q -- Ні --> S[NewState_i := State_i]
+    P --> T
+    R --> T
+    S --> T
+    N --> U
+    T{"NewState_i != State_i?"}
+    U[Перейти до наступного елемента]
+    T -- Ні --> V[Зберегти актуальний стан у Redis]
+    T -- Так --> W[Сформувати Event_i з унікальним eventId]
+    W --> AA{"Kafka підтвердила публікацію?"}
+    AA -- Ні --> AB[Залишити позицію для повторної обробки]
+    AB --> AC([Кінець])
+    AA -- Так --> AD[State_i := NewState_i оновити Redis]
+    AD --> U
+    V --> U
+    U --> AE{"Існує наступна Geofences_i?"}
+    AE -- Так --> I
+    AE -- Ні --> AF[Оновити LastTimestamp]
+    AF --> Z
+    X1 --> Z
+    X2 --> Z
+```
+
+**Примітка щодо реалізації.** Для обчислення `Distance[i]` може використовуватися формула гаверсинусів. Параметри `R[i]`, `H[i]` та `A_MAX` мають зберігатися в конфігурації геозони або сервісу. Публікація в Kafka та оновлення Redis не є однією атомарною транзакцією. Тому повторна обробка може породити повторну доставку події, а споживачі повинні підтримувати ідемпотентність за `eventId`.
+
+## 2.6.3. Алгоритм обробки події та надсилання push-сповіщення в Reminder Service
+
+**Призначення.** Алгоритм забезпечує обробку повідомлення, отриманого з Kafka, пошук відповідних активних нагадувань та надсилання push-сповіщення користувачу через Firebase Cloud Messaging (FCM).
+
+**Вхідні дані:**
+
+- `Event` — повідомлення з Kafka;
+- `eventId` — унікальний ідентифікатор події;
+- `eventType` — тип події;
+- `petId` — ідентифікатор тварини;
+- `occurredAt` — час виникнення події;
+- `Reminders[i]` — набір нагадувань, пов'язаних із твариною та типом події.
+
+**Вихідні дані:**
+
+- результат обробки події;
+- статус надсилання повідомлення;
+- запис про успішну або невдалу доставку.
+
+**Основні змінні:**
+
+- `ProcessedEvent` — ознака попередньої обробки події;
+- `MatchingReminders[i]` — нагадування, що відповідають події;
+- `Notification[i]` — сформоване push-сповіщення;
+- `RetryCount[i]` — кількість спроб надсилання;
+- `MAX_RETRIES` — максимальна кількість спроб;
+- `FCMResponse` — результат відповіді FCM.
+
+### Блок-схема алгоритму
+
+```mermaid
+flowchart TD
+    A([Початок]) --> B[/Отримати Event із Kafka/]
+    B --> C{"eventId, eventType і обов'язкові поля наявні?"}
+    C -- Ні --> X1[Зафіксувати некоректне повідомлення]
+    C -- Так --> D{"eventId вже оброблено?"}
+    D -- Так --> Y[/Підтвердити повторне повідомлення Kafka/]
+    D -- Ні --> E[Отримати Reminders_i з PostgreSQL]
+    E --> F[MatchingReminders_i := відфільтрувати за petId та eventType]
+    F --> G{"MatchingReminders не порожній?"}
+    G -- Ні --> H[Зафіксувати відсутність відповідних нагадувань]
+    H --> Y
+    G -- Так --> I[Вибрати MatchingReminders_i]
+    I --> J{"Нагадування активне AND доставка ще не зафіксована?"}
+    J -- Ні --> K[Перейти до наступного нагадування]
+    J -- Так --> L[Notification_i := сформувати повідомлення]
+    L --> M[RetryCount_i := 0]
+    M --> N[Надіслати Notification_i через FCM]
+    N --> O{"FCM повернув успішну відповідь?"}
+    O -- Так --> P[DeliveryStatus_i := SENT]
+    O -- Ні --> Q[RetryCount_i := RetryCount_i + 1]
+    Q --> R{"RetryCount_i < MAX_RETRIES?"}
+    R -- Так --> S[Затримка повторної спроби]
+    S --> N
+    R -- Ні --> T[DeliveryStatus_i := FAILED]
+    P --> U[Зберегти результат доставки в PostgreSQL]
+    T --> U
+    U --> V{"Результат збережено?"}
+    V -- Ні --> W[Не підтверджувати повідомлення Kafka]
+    W --> Z([Кінець])
+    V -- Так --> K
+    K --> AA{"Існує наступне MatchingReminders_i?"}
+    AA -- Так --> I
+    AA -- Ні --> AB[Зафіксувати eventId як оброблений]
+    AB --> AC{"Результат обробки збережено?"}
+    AC -- Ні --> W
+    AC -- Так --> Y
+    Y --> AD([Кінець])
+    X1 --> AD
+```
+
+**Примітка щодо доставки.** Kafka та FCM не утворюють спільної транзакції. Тому алгоритм не гарантує абсолютну доставку рівно один раз. Він забезпечує контроль повторної обробки на рівні `eventId` і збережених статусів. У разі аварії між прийняттям повідомлення FCM та фіксацією статусу в PostgreSQL можливе повторне надсилання. Цей ризик потрібно враховувати під час реалізації механізму доставки.
+
+## 2.7. Інтеграційний аудит та верифікація цілісності доменів
+
+## Офіційний технічний висновок (Production Readiness Report)
+
+За результатами проведеного архітектурного інтеграційного аудиту встановлено, що модель даних PostgreSQL 16, зовнішній REST API-контракт OpenAPI 3.0.3 та алгоритми Pet Service, Geo Service і Reminder Service можуть функціонувати в межах єдиної узгодженої архітектури системи Pet Care.
+
+Перевірка підтвердила:
+
+1. **Узгодженість структури даних та API.** Поля REST-контракту мають відповідники в моделі даних. Типи ідентифікаторів, правила доступу та валідації визначені без суперечностей.
+2. **Узгодженість Pet Service.** Механізми Event Sourcing, контролю версій агрегатів, ідемпотентності команд та Outbox узгоджені з призначенням таблиць домену `pet`.
+3. **Узгодженість Geo Service.** Модель даних підтримує збереження геозон, вимірювань, поточних станів і результатів алгоритму визначення переходів. Конфігураційні параметри та повторна публікація подій визначені на архітектурному рівні.
+4. **Узгодженість Reminder Service.** Модель підтримує облік нагадувань, пристроїв, доставок та оброблених подій. Передбачено механізми ідемпотентності логічних операцій та контролю повторної обробки.
+5. **Узгодженість міжсервісної взаємодії.** Відповідальність REST API, Kafka та FCM розмежована. Логічні посилання між доменами не порушують принцип незалежності сервісів.
+
+Зауваження, виявлені під час первинного аудиту, опрацьовані шляхом уточнення ролей сутностей, обмежень цілісності, правил ідемпотентності та форматів міжсервісної взаємодії. За умови відображення зазначених рішень у фінальних специфікаціях моделі даних та алгоритмів, **архітектурних конфліктів між СУБД, REST API-контрактом і логікою алгоритмів не виявлено**.
+
+**Підсумковий статус: архітектурний інтеграційний аудит пройдено. Проєктна документація узгоджена на рівні моделей даних, API та алгоритмів.**
