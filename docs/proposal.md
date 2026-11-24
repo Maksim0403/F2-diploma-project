@@ -1,5 +1,6 @@
 ﻿# Thesis Proposal
-### 1. Попередня робоча назва проєкту
+
+## 1. Попередня робоча назва проєкту
 
 **UA:** Розроблення мобільного застосунку для догляду за домашніми тваринами на основі подієво-орієнтованої архітектури (Event Sourcing)
 
@@ -42,23 +43,23 @@
 - Мобільний клієнт: Kotlin
 - Бекенд: Java або Python (остаточний вибір уточнюється)
 
-**Архітектурні патерни:** 
+**Архітектурні патерни:**
 
 - Event Sourcing
 - Мікросервісна архітектура
 
-**Фреймворки:** 
+**Фреймворки:**
 
 - Мобільний клієнт: Jetpack Compose, Room
 - Бекенд: Spring Boot, Spring Security, Spring Data JPA, MapStruct (Java) / FastAPI, Pydantic, SQLAlchemy (Python)
 
-**Бази даних і брокери:** 
+**Бази даних і брокери:**
 
 - PostgreSQL
 - Redis
 - Apache Kafka
 
-**DevOps-інструменти**
+### DevOps-інструменти
 
 - Docker, Docker Compose
 - GitHub Actions
