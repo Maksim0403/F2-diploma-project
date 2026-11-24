@@ -3,9 +3,10 @@ openapi: 3.0.3
 info:
   title: Pet Care API
   description: >
-    REST API for managing pets in the Pet Care system.
-    The API is exposed by the Backend API Gateway
-    and consumed by the Frontend SPA.
+    REST API for the Pet Care system.
+    The Android application communicates directly with
+    Pet Service, Geo Service and Reminder Service.
+    The system does not use a centralized API Gateway.
   version: 1.0.0
 
 servers:
@@ -216,13 +217,6 @@ paths:
 
         '401':
           description: Authentication is required.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-        '403':
-          description: The user does not have access to this pet.
           content:
             application/json:
               schema:
